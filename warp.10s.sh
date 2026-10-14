@@ -87,7 +87,12 @@ fi
 if [[ "$(s .switch_locked)" == true ]]; then
   echo "Switch locked by your organization | size=11"
 elif [[ "$status" == Connected || "$status" == Connecting ]]; then
-  item "Disconnect" disconnect
+  if [[ "${auto_min:-0}" -gt 0 ]]; then
+    # Under an auto-connect policy a disconnect is a timed pause, not an off switch.
+    item "Emergency pause (reconnects in $auto_min min)" disconnect
+  else
+    item "Disconnect" disconnect
+  fi
 else
   item "Connect" connect
 fi
