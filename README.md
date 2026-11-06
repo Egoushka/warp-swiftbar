@@ -10,6 +10,9 @@ It talks to the WARP daemon through `warp-cli`, the same way the official app do
 - Countdown to your org's auto-reconnect after a manual disconnect
 - Organization, mode, tunnel protocol, virtual-network switcher
 - Split-tunnel list (click an entry to copy it)
+- Red "tailnet flapping" label when the interface carrying `100.64.0.0/10` changes 3 or more times in 5 minutes
+  (WARP and Tailscale fighting over the range), with a hint to use the userspace Tailscale node on SOCKS `127.0.0.1:1055`.
+  `bash warp.10s.sh flap-check` is a dry run; `test/flap.sh` tests it without the network
 - When the daemon isn't running after a reboot: start it (admin prompt) or open Login Items
 
 ## Install
