@@ -19,6 +19,35 @@ PAUSED_AT="$CACHE/paused_at"
 SELF="$0"
 mkdir -p "$CACHE"
 
+# Tailnet route watch. WARP and Tailscale both want 100.64.0.0/10; when they fight, the
+# interface carrying that range keeps changing. Log each change, call it a flap when
+# FLAP_CHANGES or more land within FLAP_WINDOW seconds.
+ROUTE_LOG="$CACHE/tailnet_route"
+TAILNET_PROBE="${WARP_SWIFTBAR_PROBE:-100.100.100.100}"
+SOCKS_PORT="${WARP_SWIFTBAR_SOCKS_PORT:-1055}"
+FLAP_WINDOW=300
+FLAP_CHANGES=3
+
+# Sets FLAP_COUNT, ROUTE_NOW. WARP_SWIFTBAR_ROUTE_IFACE and WARP_SWIFTBAR_NOW stand in for
+# the route table and the clock, so the logic runs without the network.
+flap_update() {
+  local now last
+  now="${WARP_SWIFTBAR_NOW:-$(date +%s)}"
+  ROUTE_NOW="${WARP_SWIFTBAR_ROUTE_IFACE:-$(route -n get "$TAILNET_PROBE" 2>/dev/null | awk '/interface:/{print $2}')}"
+  ROUTE_NOW="${ROUTE_NOW:-none}"
+  if [[ ! -s "$ROUTE_LOG" ]]; then
+    echo "0 $ROUTE_NOW" >"$ROUTE_LOG"   # baseline, not a change
+  else
+    last=$(tail -n 1 "$ROUTE_LOG" | cut -d' ' -f2)
+    if [[ "$ROUTE_NOW" != "$last" ]]; then
+      echo "$now $ROUTE_NOW" >>"$ROUTE_LOG"
+      tail -n 20 "$ROUTE_LOG" >"$ROUTE_LOG.tmp" && mv "$ROUTE_LOG.tmp" "$ROUTE_LOG"
+    fi
+  fi
+  FLAP_COUNT=$(awk -v c=$((now - FLAP_WINDOW)) '$1 >= c' "$ROUTE_LOG" | wc -l | tr -d ' ')
+}
+flapping() { (( FLAP_COUNT >= FLAP_CHANGES )); }
+
 # --- actions (menu items call the script back with an argument) ---
 case "$1" in
   connect)    warp-cli connect >/dev/null 2>&1; rm -f "$PAUSED_AT"; exit 0 ;;
@@ -33,7 +62,25 @@ case "$1" in
   quit-gui)   osascript -e 'quit app "Cloudflare WARP"' >/dev/null 2>&1; exit 0 ;;
   open-gui)   open -a "Cloudflare WARP"; exit 0 ;;
   login-items) open "x-apple.systempreferences:com.apple.LoginItems-Settings.extension"; exit 0 ;;
+  flap-check)  # dry run: detection only, exit 1 when flapping
+    flap_update
+    if flapping; then echo "flapping: $FLAP_COUNT route changes in ${FLAP_WINDOW}s (now $ROUTE_NOW)"; exit 1; fi
+    echo "stable: $FLAP_COUNT route changes in ${FLAP_WINDOW}s (now $ROUTE_NOW)"; exit 0 ;;
 esac
+
+flap_update
+# Menu-bar line: icon, plus a red label while the tailnet route flaps.
+head_line() { if flapping; then echo "tailnet flapping | sfimage=$1 color=red"; else echo " | sfimage=$1"; fi; }
+flap_menu() {
+  flapping || return 0
+  echo "Tailnet route is flapping ($FLAP_COUNT changes in $((FLAP_WINDOW / 60)) min, now $ROUTE_NOW) | color=red"
+  if nc -z 127.0.0.1 "$SOCKS_PORT" 2>/dev/null; then
+    echo "Fallback: reach the tailnet through the userspace node, SOCKS 127.0.0.1:$SOCKS_PORT | size=11"
+  else
+    echo "Fallback: the userspace Tailscale node is not listening on 127.0.0.1:$SOCKS_PORT, start it | size=11"
+  fi
+  echo "---"
+}
 
 # SwiftBar treats "|" as the parameter separator.
 clean() { tr '|' '/' ; }
@@ -41,8 +88,9 @@ clean() { tr '|' '/' ; }
 item() { echo "$1 | bash='$SELF' param1=$2 ${3:+param2='$3'} terminal=false refresh=true"; }
 
 if ! command -v warp-cli >/dev/null || ! command -v jq >/dev/null; then
-  echo " | sfimage=exclamationmark.shield"
+  head_line exclamationmark.shield
   echo "---"
+  flap_menu
   echo "warp-cli or jq not found on PATH"
   echo "Install Cloudflare WARP | href=https://developers.cloudflare.com/cloudflare-one/team-and-resources/devices/warp/download-warp/"
   exit 0
@@ -50,8 +98,9 @@ fi
 
 status_json=$(warp-cli --json status 2>/dev/null)
 if ! jq -e .status >/dev/null 2>&1 <<<"$status_json"; then
-  echo " | sfimage=exclamationmark.shield"
+  head_line exclamationmark.shield
   echo "---"
+  flap_menu
   echo "WARP daemon is not running"
   echo "Usually: Cloudflare WARP is off under Login Items → Allow in the Background | size=11"
   item "Start daemon now (asks for admin password)" start-daemon
@@ -69,8 +118,9 @@ case "$status" in
   Connecting) icon="arrow.triangle.2.circlepath" ;;
   *)          icon="shield.slash" ;;
 esac
-echo " | sfimage=$icon"
+head_line "$icon"
 echo "---"
+flap_menu
 
 echo "${status}${reason:+ — $reason}"
 
