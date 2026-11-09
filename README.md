@@ -13,6 +13,9 @@ It talks to the WARP daemon through `warp-cli`, the same way the official app do
 - Red "tailnet flapping" label when the interface carrying `100.64.0.0/10` changes 3 or more times in 5 minutes
   (WARP and Tailscale fighting over the range), with a hint to use the userspace Tailscale node on SOCKS `127.0.0.1:1055`.
   `bash warp.10s.sh flap-check` is a dry run; `test/flap.sh` tests it without the network
+- Freeze: stops and disables the WARP daemon (admin prompt), so nothing can reconnect it, the org's auto-connect
+  included, even after a reboot. The menu then shows "WARP is frozen" with Unfreeze.
+  `test/freeze.sh` tests it without an admin prompt or a daemon
 - When the daemon isn't running after a reboot: start it (admin prompt) or open Login Items
 
 ## Install
@@ -42,6 +45,8 @@ Reinstalling the app "fixes" it only because it re-registers that background ite
 
 It can't override Zero Trust policy: auto-reconnect timers, locked switches, split-tunnel lists and mode
 come from your organization's device profile. The plugin shows them; your admin changes them.
+Freeze doesn't change any of that: it switches off the daemon that enforces it, so while frozen your
+organization's policy is not applied on this Mac. Use it only on a machine where that is yours to decide.
 
 ## License
 

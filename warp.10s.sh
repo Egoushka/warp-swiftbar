@@ -48,16 +48,34 @@ flap_update() {
 }
 flapping() { (( FLAP_COUNT >= FLAP_CHANGES )); }
 
+# Runs a shell command as root through the macOS admin prompt. WARP_SWIFTBAR_DRY_RUN prints it instead.
+as_root() {
+  if [[ -n "${WARP_SWIFTBAR_DRY_RUN:-}" ]]; then echo "$1"; return 0; fi
+  osascript -e "do shell script \"$1\" with administrator privileges" >/dev/null 2>&1
+}
+
+# Frozen = launchd has the daemon job disabled (see the freeze action). WARP_SWIFTBAR_FROZEN=1|0 stands in for launchd.
+frozen() {
+  case "${WARP_SWIFTBAR_FROZEN:-}" in 1) return 0 ;; 0) return 1 ;; esac
+  launchctl print-disabled system 2>/dev/null | grep -Eq "\"$DAEMON_LABEL\" => (disabled|true)"
+}
+
 # --- actions (menu items call the script back with an argument) ---
 case "$1" in
   connect)    warp-cli connect >/dev/null 2>&1; rm -f "$PAUSED_AT"; exit 0 ;;
   disconnect) warp-cli disconnect >/dev/null 2>&1; date +%s >"$PAUSED_AT"; exit 0 ;;
   vnet)       warp-cli vnet "$2" >/dev/null 2>&1; exit 0 ;;
   copy)       printf '%s' "$2" | pbcopy; exit 0 ;;
-  start-daemon)
+  freeze)
+    # The org's auto-connect lives inside the daemon, and bootout alone is undone by a reboot or by
+    # anything that loads the job again. Disabling the job blocks both, so nothing can reconnect WARP.
+    as_root "launchctl disable system/$DAEMON_LABEL; launchctl bootout system/$DAEMON_LABEL"
+    exit 0 ;;
+  start-daemon|unfreeze)
     # The daemon plist is RunAtLoad+KeepAlive; if launchd didn't load it at boot,
     # macOS background-item approval is usually off. Load and start it as root.
-    osascript -e "do shell script \"launchctl bootstrap system '$DAEMON_PLIST' 2>/dev/null; launchctl kickstart -k system/$DAEMON_LABEL\" with administrator privileges" >/dev/null 2>&1
+    # enable is a no-op unless the job was frozen, and a disabled job refuses to load.
+    as_root "launchctl enable system/$DAEMON_LABEL; launchctl bootstrap system '$DAEMON_PLIST' 2>/dev/null; launchctl kickstart -k system/$DAEMON_LABEL"
     exit 0 ;;
   quit-gui)   osascript -e 'quit app "Cloudflare WARP"' >/dev/null 2>&1; exit 0 ;;
   open-gui)   open -a "Cloudflare WARP"; exit 0 ;;
@@ -93,6 +111,16 @@ if ! command -v warp-cli >/dev/null || ! command -v jq >/dev/null; then
   flap_menu
   echo "warp-cli or jq not found on PATH"
   echo "Install Cloudflare WARP | href=https://developers.cloudflare.com/cloudflare-one/team-and-resources/devices/warp/download-warp/"
+  exit 0
+fi
+
+if frozen; then
+  head_line snowflake
+  echo "---"
+  flap_menu
+  echo "WARP is frozen"
+  echo "Daemon stopped and disabled: the org can't reconnect it, even after a reboot | size=11"
+  item "Unfreeze (asks for admin password)" unfreeze
   exit 0
 fi
 
@@ -169,6 +197,7 @@ jq -r '(.split_tunnel_ips // [])[], (.split_tunnel_hosts // [])[] | "\(.value //
   done
 
 echo "---"
+item "Freeze WARP (daemon off, the org can't reconnect it)" freeze
 if pgrep -xq "Cloudflare WARP"; then
   item "Quit official WARP app (tunnel keeps running)" quit-gui
 else
